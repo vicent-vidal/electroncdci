@@ -1,0 +1,183 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main, cdci, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+env:
+  NODE_VERSION: '22.x'
+
+jobs:
+  # Job 1: Tests y validaciones
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Lint
+        run: npm run lint
+      
+      - name: Run tests
+        run: npm test
+      
+      - name: Build Angular
+        run: npm run web:prod
+
+  # Job 2: Build Windows con Azure Signing
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Install Azure Code Signing tools
+        run: |
+          dotnet tool install --global AzureSignTool
+          dotnet tool install --global Microsoft.Trusted.Signing.Client
+      
+      - name: Build Electron App (Unsigned)
+        run: npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Sign Windows Executable with Azure
+        run: |
+          $files = Get-ChildItem -Path "release/*.exe" -Recurse
+          foreach ($file in $files) {
+            AzureSignTool sign `
+              --azure-key-vault-url "${{ secrets.AZURE_KEY_VAULT_URL }}" `
+              --azure-key-vault-client-id "${{ secrets.AZURE_CLIENT_ID }}" `
+              --azure-key-vault-tenant-id "${{ secrets.AZURE_TENANT_ID }}" `
+              --azure-key-vault-client-secret "${{ secrets.AZURE_CLIENT_SECRET }}" `
+              --azure-key-vault-certificate "${{ secrets.AZURE_CERT_NAME }}" `
+              --file-digest sha256 `
+              --timestamp-rfc3161 http://timestamp.digicert.com `
+              --verbose `
+              $file.FullName
+          }
+        shell: pwsh
+      
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: release/*.exe
+          retention-days: 30
+
+  # Job 3: Build macOS
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Import Code Signing Certificate
+        if: ${{ github.event_name == 'release' }}
+        uses: apple-actions/import-codesign-certs@v2
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      
+      - name: Build and Sign macOS App
+        run: npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            release/*.dmg
+            release/*.zip
+
+  # Job 4: Build Linux
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build Linux App
+        run: npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            release/*.AppImage
+            release/*.deb
+
+  # Job 5: Create GitHub Release (solo en tags)
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+      
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            windows-release/*
+            macos-release/*
+            linux-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
