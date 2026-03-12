@@ -62,9 +62,7 @@ jobs:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       - name: Install Azure Code Signing tools
-        run: |
-          dotnet tool install --global AzureSignTool
-          dotnet tool install --global Microsoft.Trusted.Signing.Client
+        run: dotnet tool install --global AzureSignTool
       
       - name: Build Electron App (Unsigned)
         run: npm run electron:build
