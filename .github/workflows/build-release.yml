@@ -63,8 +63,7 @@ jobs:
       
       - name: Install Azure Trusted Signing tools
         run: |
-          dotnet tool install --global AzureSignTool
-          az extension add --name trusted-signing
+          dotnet tool install --global Microsoft.Trusted.Signing.Client
       
       - name: Build Electron App (Unsigned)
         run: npm run electron:build
@@ -76,13 +75,15 @@ jobs:
           $files = Get-ChildItem -Path "release/*.exe" -Recurse
           foreach ($file in $files) {
             Write-Host "Signing $($file.FullName)..."
-            az trusted-signing sign `
-              --account-name "${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}" `
-              --certificate-profile "${{ secrets.AZURE_CERT_PROFILE_NAME }}" `
-              --files $file.FullName `
-              --file-digest sha256 `
-              --timestamp-rfc3161 http://timestamp.digicert.com `
-              --timestamp-digest sha256
+            trustedsigning sign `
+              -endpoint "https://eus.codesigning.azure.net/" `
+              -account "${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}" `
+              -certificateProfile "${{ secrets.AZURE_CERT_PROFILE_NAME }}" `
+              -files $file.FullName `
+              -fileDigest SHA256 `
+              -timestampRfc3161 "http://timestamp.digicert.com" `
+              -timestampDigest SHA256 `
+              -v
           }
         shell: pwsh
         env:
